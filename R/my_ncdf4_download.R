@@ -38,6 +38,6 @@ urls <- read.table(url_filename) |>
 n_urls <- nrow(urls)
 
 tictoc::tic()
-furrr::future_pmap(list(urls[,1],"Seu Usuario","Sua Senha"),my_ncdf4_download)
+furrr::future_pmap(list(urls[,1],"witoria.araujo","Wictoria1234."),my_ncdf4_download)
 tictoc::toc()
 

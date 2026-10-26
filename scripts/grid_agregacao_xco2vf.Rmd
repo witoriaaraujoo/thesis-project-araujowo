@@ -1,0 +1,526 @@
+---
+title: "Agrupamento em Grid Regular - XCO2 (OCO-2/3 + GOSAT-1 + GOSAT-2)"
+subtitle: "Amazônia Legal | 2015-2024"
+output: github_document
+author: Witória de Oliveira Araujo
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  message = FALSE,
+  error = FALSE,
+  warning = FALSE,
+  eval = FALSE,
+  comment = "#>"
+)
+```
+
+### Objetivo
+
+1. Padronizar e unir as 3 bases (variável de interesse: **XCO2**)
+2. Testar grids regulares de **0.25°, 0.50° e 1.0°**
+3. Agregar por **(célula x dia)**, exigindo mínimo de **5 observações/dia/célula**
+4. Calcular **média** e **mediana** por célula-dia e comparar robustez
+5. Comparar as 3 resoluções e apontar a mais adequada
+
+## 1. Preparação dos dados
+
+```{r}
+library(tidyverse)
+library(geobr)
+library(sf)
+```
+
+Ajuste os caminhos dos arquivos e os nomes das colunas conforme os seus dados
+reais. Como a área de interesse (Amazônia Legal) já vem recortada nas 3
+bases, não há filtro espacial adicional aqui — só padronização e checagem de
+qualidade.
+
+```{r}
+# Carrega os 3 sensores já processados (.rds) e mantém só até 2024
+xco2_nasa <- readRDS("../data/data-set-xco2.rds")   |> filter(year <= 2024)
+gosat1    <- readRDS("../data/data-set-gosat1.rds") |> filter(year <= 2024)
+gosat2    <- readRDS("../data/data-set-gosat2.rds") |> filter(year <= 2024)
+```
+
+```{r checar-anos}
+# Conferência rápida da cobertura temporal de cada sensor
+xco2_nasa$year |> unique()
+gosat1$year    |> unique()
+gosat2$year    |> unique()
+```
+
+```{r}
+# Checagem visual inicial (3 sensores, todos os anos).
+# gosat1/gosat2 são objetos sf -> st_drop_geometry() remove a coluna espacial.
+
+colls <- c("longitude", "latitude", "year", "month", "day", "xco2")
+
+xco2_bases <- bind_rows(
+  gosat1    |> sf::st_drop_geometry() |> select(all_of(colls)) |> mutate(nome_base = "gosat1"),
+  gosat2    |> sf::st_drop_geometry() |> select(all_of(colls)) |> mutate(nome_base = "gosat2"),
+  xco2_nasa |> select(all_of(colls)) |> mutate(nome_base = "xco2_nasa")
+)
+
+xco2_bases |>
+  ggplot(aes(longitude, latitude)) +
+  geom_point(size = 0.3, alpha = 0.3) +
+  facet_wrap(~nome_base) +
+  coord_equal() +
+  theme_minimal()
+
+```
+
+
+```{r}
+# Distribuição do XCO2 por ano e sensor - checagem visual de consistência
+xco2_bases |>
+  ggplot(aes(as_factor(year), xco2, fill = nome_base)) +
+  geom_boxplot() +
+  theme_minimal()
+```
+
+## 2. Validação de consistência: GOSAT-2 vs OCO-2/OCO-3
+
+> Esta seção reproduz a validação de consistência entre sensores já
+> realizada (comparação GOSAT-2 vs OCO-2/OCO-3: bias, Bland-Altman,
+> regressão Deming, sazonalidade/tendência). É a etapa de **validação**,
+> não a agregação-alvo do projeto, essa está na Seção 3.
+
+Bland-Altman: plota (GOSAT2−OCO) vs média(GOSAT2,OCO), revelando se o bias é
+constante (offset puro) ou proporcional (cresce com a concentração —
+indicaria problema de calibração/ganho). Pacote `BlandAltmanLeh`.
+
+Regressão Deming/ortogonal (não OLS simples, pois ambos os sensores têm
+erro): dá slope e intercepto reais da relação entre os dois. Pacote `deming`.
+
+Estatísticas descritivas do bias: média, mediana, DP, RMSE, MAE — global e
+por mês/estação (seca vs. chuvosa).
+
+Teste de significância: Wilcoxon pareado (resíduos de XCO2 raramente são
+normais) para testar se a diferença é estatisticamente ≠ 0 em cada estrato
+temporal.
+
+Decomposição temporal: separa o bias em (i) nível médio (offset constante
+2019–2024) e (ii) tendência/sazonalidade — se as tendências concordam mas o
+nível não, é indício de bias sistemático de calibração, não de processo
+atmosférico real.
+
+```{r}
+# Pacotes específicos desta validação estatística (carregados só aqui)
+library(BlandAltmanLeh)
+library(deming)
+```
+
+```{r}
+# Montando a Base - Bias
+
+colls <- c("longitude", "latitude", "year", "month", "day", "xco2")
+
+base_bias <- bind_rows(
+  gosat2    |> sf::st_drop_geometry() |> select(all_of(colls)) |> mutate(nome_base = "gosat2"),
+  xco2_nasa |> select(all_of(colls)) |> mutate(nome_base = "oco2_oco3")
+) |>
+  filter(year >= 2019, year <= 2024) |>
+  filter(!is.na(xco2), !is.na(longitude), !is.na(latitude))
+```
+
+
+```{r}
+# Grade regular 1° x mês (mais robusta para esta validação de bias)
+res_grau <- 1
+
+pts_amz <- base_bias |>
+  mutate(
+    cell_lon = floor(longitude / res_grau) * res_grau + res_grau / 2,
+    cell_lat = floor(latitude  / res_grau) * res_grau + res_grau / 2,
+    cell_id  = paste0(round(cell_lon, 3), "_", round(cell_lat, 3)),
+    ym       = sprintf("%d-%02d", year, month)
+  )
+
+# Agregação mensal por célula x sensor
+grid_month <- pts_amz |>
+  group_by(cell_id, cell_lon, cell_lat, year, month, ym, nome_base) |>
+  summarise(
+    xco2_mean = mean(xco2, na.rm = TRUE),
+    xco2_sd   = sd(xco2, na.rm = TRUE),
+    n_obs     = n(),
+    .groups = "drop"
+  )
+
+# Filtro mínimo de robustez (ajuste conforme densidade real dos seus dados)
+n_min <- 3
+grid_month_f <- grid_month |> filter(n_obs >= n_min)
+```
+
+```{r}
+# Pivot para comparação pareada (mesma célula, mesmo mês, os 2 sensores lado a lado)
+grid_wide <- grid_month_f |>
+  select(cell_id, cell_lon, cell_lat, year, month, ym, nome_base, xco2_mean, n_obs) |>
+  pivot_wider(names_from = nome_base, values_from = c(xco2_mean, n_obs)) |>
+  filter(!is.na(xco2_mean_gosat2), !is.na(xco2_mean_oco2_oco3)) |>
+  mutate(
+    diff_ppm  = xco2_mean_gosat2 - xco2_mean_oco2_oco3,
+    media_ppm = (xco2_mean_gosat2 + xco2_mean_oco2_oco3) / 2,
+    season    = if_else(month %in% c(5, 6, 7, 8, 9), "seca", "chuvosa")
+  )
+
+cat("N de pares grid x mês:", nrow(grid_wide), "\n")
+```
+
+```{r}
+# Estatística descritiva do bias
+resumo_geral <- grid_wide |>
+  summarise(
+    bias_medio   = mean(diff_ppm, na.rm = TRUE),
+    bias_mediano = median(diff_ppm, na.rm = TRUE),
+    bias_sd      = sd(diff_ppm, na.rm = TRUE),
+    rmse         = sqrt(mean(diff_ppm^2, na.rm = TRUE)),
+    n            = n()
+  )
+print(resumo_geral)
+```
+
+```{r}
+# Bias por ano
+resumo_por_ano <- grid_wide |>
+  group_by(year) |>
+  summarise(bias_medio = mean(diff_ppm, na.rm = TRUE), bias_sd = sd(diff_ppm, na.rm = TRUE), n = n())
+print(resumo_por_ano)
+```
+
+```{r}
+# Bias por estação (seca vs. chuvosa)
+resumo_por_estacao <- grid_wide |>
+  group_by(season) |>
+  summarise(bias_medio = mean(diff_ppm, na.rm = TRUE), bias_sd = sd(diff_ppm, na.rm = TRUE), n = n())
+print(resumo_por_estacao)
+```
+
+```{r}
+# Teste de significância pareado e não-paramétrico
+wilcox_geral <- wilcox.test(grid_wide$xco2_mean_gosat2, grid_wide$xco2_mean_oco2_oco3, paired = TRUE)
+print(wilcox_geral)
+```
+
+```{r}
+# Estatísticas de Bland-Altman (diferença média e limites de concordância)
+ba <- bland.altman.stats(grid_wide$xco2_mean_gosat2, grid_wide$xco2_mean_oco2_oco3)
+print(ba[c("mean.diffs", "critical.diff", "lines")])
+```
+
+```{r}
+# Gráfico Bland-Altman (mais controle visual que bland.altman.plot)
+ggplot(grid_wide, aes(x = media_ppm, y = diff_ppm)) +
+  geom_point(alpha = 0.4, color = "#1d2f45") +
+  geom_hline(yintercept = ba$mean.diffs, color = "#F39200", linewidth = 1) +
+  geom_hline(yintercept = ba$lines[1], linetype = "dashed", color = "grey40") +
+  geom_hline(yintercept = ba$lines[3], linetype = "dashed", color = "grey40") +
+  labs(
+    title = "Bland-Altman: GOSAT-2 vs OCO-2/OCO-3 (XCO2, Amazônia Legal)",
+    x = "Média (ppm)", y = "Diferença GOSAT-2 - OCO2/3 (ppm)"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Regressão Deming (erro nos dois eixos, ao contrário do OLS simples)
+dem <- deming(xco2_mean_gosat2 ~ xco2_mean_oco2_oco3, data = grid_wide)
+print(dem)
+# Intercepto != 0 e slope == 1  -> bias aditivo (offset puro)
+# Slope != 1                    -> bias proporcional (problema de ganho/calibração)
+```
+
+```{r}
+# Teste formal de bias proporcional (correlação bias x concentração)
+cor_test <- cor.test(grid_wide$diff_ppm, grid_wide$media_ppm, method = "spearman")
+print(cor_test)
+# p < 0.05 e rho > 0 -> confirma que o bias cresce com a concentração
+```
+
+```{r}
+# Outliers fora dos limites de concordância do Bland-Altman
+outliers <- grid_wide |>
+  filter(diff_ppm < ba$lines[1] | diff_ppm > ba$lines[3]) |>
+  arrange(desc(abs(diff_ppm - ba$mean.diffs)))
+print(outliers |> select(cell_id, ym, xco2_mean_gosat2, xco2_mean_oco2_oco3, diff_ppm, media_ppm, n_obs_gosat2, n_obs_oco2_oco3))
+```
+
+```{r}
+# Checa se a dispersão do bias muda com o nº de observações (ruído por baixa amostragem)
+ggplot(grid_wide, aes(x = pmin(n_obs_gosat2, n_obs_oco2_oco3), y = abs(diff_ppm - ba$mean.diffs))) +
+  geom_point(alpha = 0.4, color = "#1d2f45") +
+  geom_smooth(method = "loess", color = "#F39200", se = FALSE) +
+  labs(
+    x = "Nº mínimo de observações na célula-mês",
+    y = "Desvio absoluto do bias médio (ppm)",
+    title = "Dispersão do bias vs densidade amostral"
+  ) +
+  theme_minimal()
+```
+
+```{r}
+# Série temporal do bias mensal (nível + tendência)
+bias_mensal <- grid_wide |>
+  group_by(year, month) |>
+  summarise(bias_medio = mean(diff_ppm, na.rm = TRUE), n = n(), .groups = "drop") |>
+  mutate(data = as.Date(paste(year, month, "01", sep = "-")))
+
+ggplot(bias_mensal, aes(x = data, y = bias_medio)) +
+  geom_line(color = "#1d2f45") +
+  geom_point(aes(size = n), color = "#F39200", alpha = 0.7) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+  labs(title = "Evolução mensal do bias GOSAT-2 - OCO2/3 (Amazônia Legal)", x = NULL, y = "Bias médio (ppm)", size = "N células") +
+  theme_minimal()
+```
+
+```{r}
+# Exportação da tabela final (descomente para salvar)
+# write.csv(grid_wide, "../output/grid_wide_gosat2_vs_oco_apos.csv", row.names = FALSE)
+# write.csv(resumo_por_ano, "../output/resumo_bias_por_ano_apos.csv", row.names = FALSE)
+# write.csv(resumo_por_estacao, "../output/resumo_bias_por_estacao_apos.csv", row.names = FALSE)
+
+## Próximo passo sugerido: cruzar diff_ppm com AOD / fração de queimada
+## (MapBiomas Fogo) por célula-mês para testar se o bias aumenta na estação
+## seca (hipótese: sensibilidade a aerossol).
+```
+
+## 3. Agregação em grid regular (objetivo principal)
+
+```{r config-colunas}
+# Mapeamento de colunas -> ajuste conforme os nomes reais dos seus arquivos
+config_cols <- list(
+  xco2_nasa = list(longitude = "longitude", latitude = "latitude", xco2 = "xco2", date = "date"),
+  gosat1    = list(longitude = "longitude", latitude = "latitude", xco2 = "xco2", date = "date"),
+  gosat2    = list(longitude = "longitude", latitude = "latitude", xco2 = "xco2", date = "date")
+)
+```
+
+```{r}
+# Padroniza nomes de colunas e remove geometria sf (se houver), pra permitir
+# o bind_rows() das 3 bases de sensores diferentes
+padronizar_base <- function(df, cfg, nome_sensor) {
+  if (inherits(df, "sf")) df <- sf::st_drop_geometry(df)
+
+  df |>
+    rename(
+      latitude  = !!cfg$latitude,
+      longitude = !!cfg$longitude,
+      xco2      = !!cfg$xco2,
+      date      = !!cfg$date
+    ) |>
+    mutate(date = as_date(date), sensor = nome_sensor) |>
+    select(latitude, longitude, xco2, date, sensor) |>
+    filter(!is.na(latitude), !is.na(longitude), !is.na(xco2), !is.na(date))
+}
+```
+
+```{r}
+# Aplica a padronização e une os 3 sensores num único long-format
+base_xco2   <- padronizar_base(xco2_nasa, config_cols$xco2_nasa, "NASA")
+base_gosat1 <- padronizar_base(gosat1,    config_cols$gosat1,    "GOSAT1")
+base_gosat2 <- padronizar_base(gosat2,    config_cols$gosat2,    "GOSAT2")
+
+base_unificada <- bind_rows(base_xco2, base_gosat1, base_gosat2)
+
+cat("Total de observações unificadas:", nrow(base_unificada), "\n")
+cat("Período:", format(min(base_unificada$date)), "a", format(max(base_unificada$date)), "\n")
+table(base_unificada$sensor)
+```
+
+```{r}
+# Atribui cada observação ao CENTRO da célula do grid, para uma dada resolução
+atribuir_grid <- function(df, resolucao) {
+  df |>
+    mutate(
+      grid_lon = floor(longitude / resolucao) * resolucao + resolucao / 2,
+      grid_lat = floor(latitude  / resolucao) * resolucao + resolucao / 2
+    )
+}
+```
+
+```{r}
+# Agrega XCO2 por (célula x dia): média, mediana e dispersão,
+# mantendo só células-dia com pelo menos min_obs observações
+agregar_grid <- function(df, resolucao, min_obs = 5) {
+  df |>
+    atribuir_grid(resolucao) |>
+    group_by(grid_lat, grid_lon, date) |>
+    summarise(
+      n_obs   = n(),
+      media   = mean(xco2, na.rm = TRUE),
+      mediana = median(xco2, na.rm = TRUE),
+      dp      = sd(xco2, na.rm = TRUE),
+      iqr     = IQR(xco2, na.rm = TRUE),
+      .groups = "drop"
+    ) |>
+    filter(n_obs >= min_obs) |>
+    mutate(cv_media = dp / media, resolucao = resolucao)
+}
+```
+
+```{r}
+# Roda a agregação para as 3 resoluções de teste
+resolucoes <- c(0.25, 0.50, 1.00)
+resultados_grid <- map_dfr(resolucoes, ~agregar_grid(base_unificada, .x, min_obs = 5))
+```
+
+### Comparação: média vs. mediana
+
+A ideia: quanto maior a dispersão relativa (`dp`, `iqr`) dentro da
+célula-dia, maior a chance de assimetria/outliers — nesse caso a
+**mediana** tende a ser mais robusta. Comparamos o quanto a média se afasta
+da mediana em cada célula-dia (indício de assimetria).
+
+```{r}
+comparacao_media_mediana <- resultados_grid |>
+  mutate(
+    diff_media_mediana = abs(media - mediana),
+    diff_relativa       = diff_media_mediana / media
+  ) |>
+  group_by(resolucao) |>
+  summarise(
+    n_celulas_dia             = n(),
+    media_dp                  = mean(dp, na.rm = TRUE),
+    media_iqr                 = mean(iqr, na.rm = TRUE),
+    media_cv                  = mean(cv_media, na.rm = TRUE),
+    media_diff_rel            = mean(diff_relativa, na.rm = TRUE),
+    prop_celulas_assimetricas = mean(diff_relativa > 0.001, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+comparacao_media_mediana
+```
+
+**Regra de decisão:**
+
+- `media_diff_rel` muito pequena → média ≈ mediana, tanto faz usar
+- `prop_celulas_assimetricas` alta + `media_cv`/`media_iqr` altos → prefira a **mediana**
+  (mais robusta a outliers, comuns em XCO2 por contaminação residual de nuvem/aerossol)
+
+### Comparação entre resoluções (0.25 / 0.50 / 1.0)
+
+```{r comparacao-resolucoes}
+comparacao_resolucoes <- resultados_grid |>
+  group_by(resolucao) |>
+  summarise(
+    n_celulas_dia_validas = n(),
+    n_celulas_espaciais    = n_distinct(paste(grid_lat, grid_lon)),
+    obs_media_por_celula   = mean(n_obs, na.rm = TRUE),
+    dp_medio               = mean(dp, na.rm = TRUE),
+    iqr_medio              = mean(iqr, na.rm = TRUE),
+    cv_medio               = mean(cv_media, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  arrange(resolucao)
+
+comparacao_resolucoes
+```
+
+**Critérios de escolha:**
+
+- Maior `n_celulas_dia_validas` → mais dados aproveitados após o filtro de 5 obs
+- Menor `dp_medio` / `iqr_medio` / `cv_medio` → maior homogeneidade dentro da célula
+- Trade-off esperado: grids finos (0.25°) → mais homogêneos, mas perdem mais
+  células no filtro de mínimo de 5 obs; grids grossos (1.0°) → mais observações
+  por célula, porém maior variabilidade interna (mistura pontos mais heterogêneos)
+
+### Visualizações
+
+```{r}
+# Densidade amostral por célula-dia, comparando as 3 resoluções
+ggplot(resultados_grid, aes(x = factor(resolucao), y = n_obs)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(x = "Resolução do grid (graus)", y = "Nº de observações por célula-dia", title = "Densidade amostral por resolução de grid") +
+  theme_minimal()
+```
+
+```{r}
+# Variabilidade (desvio padrão) intra-célula por resolução
+ggplot(resultados_grid, aes(x = factor(resolucao), y = dp)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(x = "Resolução do grid (graus)", y = "Desvio padrão do XCO2 na célula-dia", title = "Variabilidade intra-célula por resolução") +
+  theme_minimal()
+```
+
+```{r}
+# Distribuição da MÉDIA por célula-dia, por resolução
+ggplot(resultados_grid, aes(x = factor(resolucao), y = media)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(x = "Resolução do grid (graus)", y = "Média do XCO2 na célula-dia", title = "Média do XCO2 por resolução") +
+  theme_minimal()
+```
+
+```{r}
+# Distribuição da MEDIANA por célula-dia, por resolução
+ggplot(resultados_grid, aes(x = factor(resolucao), y = mediana)) +
+  geom_boxplot(outlier.alpha = 0.2) +
+  labs(x = "Resolução do grid (graus)", y = "Mediana do XCO2 na célula-dia", title = "Mediana do XCO2 por resolução") +
+  theme_minimal()
+```
+
+```{r}
+# Concordância entre média e mediana (pontos próximos da diagonal = simetria)
+ggplot(resultados_grid, aes(x = media, y = mediana)) +
+  geom_point(alpha = 0.15) +
+  geom_abline(slope = 1, intercept = 0, color = "red", linetype = "dashed") +
+  facet_wrap(~resolucao) +
+  labs(x = "Média (ppm)", y = "Mediana (ppm)", title = "Média vs. Mediana por célula-dia, por resolução") +
+  theme_minimal()
+```
+
+```{r}
+# Mapa do XCO2 médio por célula, faceado por mês (resolução de 0.25°)
+resultados_grid |>
+  mutate(year = year(date), month = month(date)) |>
+  filter(resolucao == 0.25) |>
+  ggplot(aes(x = grid_lon, y = grid_lat, fill = media)) +
+  geom_tile() +
+  facet_wrap(~month) +
+  theme_minimal()
+```
+
+```{r}
+# Tendência temporal do XCO2 (célula-dia), por resolução
+resultados_grid |>
+  ggplot(aes(date, media)) +
+  geom_point(alpha = 0.3) +
+  facet_wrap(~resolucao) +
+  theme_minimal()
+```
+
+### Exportação dos resultados
+
+```{r}
+# Descomente para salvar as tabelas finais
+# write_csv(resultados_grid, "resultados_grid_por_resolucao.csv")
+# write_csv(comparacao_media_mediana, "comparacao_media_mediana.csv")
+# write_csv(comparacao_resolucoes, "comparacao_resolucoes.csv")
+```
+
+## Salvando a Base de dados agregadas para a resolução de 0,25º.
+
+```{r}
+base_grid_025 <- resultados_grid |>
+  filter(resolucao == 0.25) |>
+  select(
+    grid_lat, grid_lon, date, n_obs,
+    xco2_mean   = media,
+    xco2_median = mediana,
+  )
+
+# Confirma o tamanho final do banco agrupado
+dim(base_grid_025)
+range(base_grid_025$date)
+
+# Salva em .rds (mantém os tipos de dado do R - recomendado para uso futuro em R)
+#saveRDS(base_grid_025, "../data/xco2_grid_025.rds")
+
+```
+
+
+
+
+
+

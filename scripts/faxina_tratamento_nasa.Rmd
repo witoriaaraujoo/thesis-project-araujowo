@@ -34,7 +34,8 @@ library(ncdf4)
 library(furrr)
 library(future)
 library(mgcv)
-source("R/my-function.R")
+library(hdf5r)
+source("../R/my-function.R")
 ```
 
 #### Faxina e Processamento de Dados da SIF (solar induced fluorescence) OCO-2 e OCO-3/NASA.
@@ -438,4 +439,116 @@ source("R/my-function.R")
 # 
 # readr::write_rds(df_xco2_amazon, "data/data-set-xco2.rds")
 ```
+
+
+#### Teste OCO-2 - standard ##########
+
+
+
+```{r}
+## Lista com caminho e nomes dos arquivo a serem lidos - xco2.
+list_of_files <- list.files("../data-raw/xco2/",
+                            pattern = ".h5",
+                            full.names = TRUE)
+```
+
+```{r}
+## buscando o contorno do Brasil.
+br <- geobr::read_country(showProgress = FALSE, 2019)
+pol_br <- sf::st_geometry(br) |> purrr::pluck(1)
+def_pol <- function(x, y, pol){
+  as.logical(sp::point.in.polygon(point.x = x,
+                                  point.y = y,
+                                  pol.x = pol[,1],
+                                  pol.y = pol[,2]))
+}
+```
+
+```{r}
+# Buscar os nomes dos arquivo .nc4.
+list_h5_xco2 <- list.files("../data-raw/xco2/",
+           recursive = TRUE,
+           full.names = TRUE,
+           pattern = "\\.h5")
+list_h5_xco2 <- grep("../data-raw/xco2/", list_h5_xco2, value = TRUE)
+length(list_h5_xco2)
+
+## Abrindo 01 arquivo.
+nc_obj <- nc_open(list_h5_xco2[1])
+
+## buscando os nomes dos atributos no arquivo.
+names(nc_obj[['var']])
+```
+
+```{r}
+## Função para ler arquivos HDF5 (.h5), extrair as variáveis de interesse e montar a tabela.
+h5_reader <- function(file_path){
+  h5_file <- hdf5r::H5File$new(file_path, mode = "r")
+  on.exit(h5_file$close_all())
+  reader <- function(nome) as.vector(h5_file[[nome]]$read())
+
+  longitude      <- reader("RetrievalGeometry/retrieval_longitude")
+  latitude       <- reader("RetrievalGeometry/retrieval_latitude")
+  time           <- reader("RetrievalHeader/retrieval_time_tai93")
+  xco2           <- reader("RetrievalResults/xco2") * 1e6         # mol/mol -> ppm
+  outcome_flag   <- reader("RetrievalResults/outcome_flag")       # substitui xco2_quality_flag
+  xco2_incerteza <- reader("RetrievalResults/xco2_uncert") * 1e6  # mol/mol -> ppm
+
+  df <- data.frame(
+    longitude      = longitude,
+    latitude       = latitude,
+    time           = time,
+    xco2           = xco2,
+    outcome_flag   = outcome_flag,
+    xco2_incerteza = xco2_incerteza,
+    path           = file_path
+  )
+
+  ## Converte o tempo TAI93 para data/hora (UTC).
+  df$data <- as.POSIXct(df$time, origin = "1993-01-01", tz = "UTC")
+
+  ## Recorte espacial da área de interesse.
+  # df <- df |>
+  #   dplyr::filter(longitude >= -80 & longitude <= -32,
+  #                 latitude  >= -34 & latitude  <= 10)
+
+  return(df)
+}
+```
+
+```{r}
+# Lista dos arquivos .h5 da pasta.
+list_of_files <- list.files("../data-raw/xco2/",
+                            pattern = "\\.h5$",
+                            full.names = TRUE)
+
+# # Recortando e salvando arquivo de XCO2 .rds.
+df_test <- purrr::map_df(list_of_files, h5_reader) # Deixar bloqueado para não rodar sempre.
+readr::write_rds(df_test, "../data-raw/df_test.rds")
+
+# df_2 <- readr::read_rds("data-raw/df_2.rds")
+dplyr::glimpse(df_test)
+```
+
+```{r}
+br <- geobr::read_country(year = 2019, showProgress = FALSE)
+
+ggplot() +
+  geom_point(data = df_test, aes(longitude, latitude, color = xco2),
+             size = 0.5) +
+  scale_color_viridis_c(name = "XCO2 (ppm)") +
+  coord_sf(xlim = c(-80, -32), ylim = c(-34, 10)) +
+  theme_bw()
+```
+
+
+
+
+
+
+
+
+
+
+
 

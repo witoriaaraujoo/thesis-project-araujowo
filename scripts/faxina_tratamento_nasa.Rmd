@@ -27,7 +27,6 @@ library(ggridges)
 library(ggpubr)
 library(geobr)
 library(sf)
-library(dplyr)
 library(gstat)
 library(vegan)
 library(ncdf4)
@@ -266,191 +265,16 @@ source("../R/my-function.R")
 ```
 
 
-#### Faxina e Processamento de Dados de CO2 Atmosférico (XCO2) do OCO-2 e OCO-3/NASA.
-
-
-```{r}
-# ## Lista com caminho e nomes dos arquivo a serem lidos - xco2.
-# list_of_files <- list.files("data-raw/xco2/",
-#                             pattern = ".nc4",
-#                             full.names = TRUE)
-```
-
-```{r}
-# ## buscando o contorno do Brasil.
-# br <- geobr::read_country(showProgress = FALSE)
-# pol_br <- br$geom |> purrr::pluck(1) |> as.matrix()
-# def_pol <- function(x, y, pol){
-#   as.logical(sp::point.in.polygon(point.x = x,
-#                                   point.y = y,
-#                                   pol.x = pol[,1],
-#                                   pol.y = pol[,2]))
-# }
-```
-
-```{r}
-# # Buscar os nomes dos arquivo .nc4.
-# list_nc4_xco2 <- list.files("data-raw/xco2/",
-#            recursive = TRUE,
-#            full.names = TRUE,
-#            pattern = "\\.nc4$")
-# list_nc4_xco2 <- grep("data-raw/xco2/", list_nc4_xco2, value = TRUE)
-# length(list_nc4_xco2)
-# 
-# # ## Abrindo 01 arquivo.
-# # nc_obj <- nc_open(list_nc4_xco2[1])
-# # 
-# # ## buscando os nomes dos atributos no arquivo.
-# # names(nc_obj[['var']])
-```
-
-```{r}
-# ## Função para ler arquivos NCD4 e extrair as variáveis de interesse e montar a tabela.
-# ncdf_reader <- function(file_path){
-#   nc_file <- ncdf4::nc_open(file_path)
-#   df <- data.frame(
-#     "longitude"=ncdf4::ncvar_get(nc_file,varid="longitude"),
-#     "latitude"=ncdf4::ncvar_get(nc_file,varid="latitude"),
-#     "time"=ncdf4::ncvar_get(nc_file,varid="time"),
-#     "xco2"=ncdf4::ncvar_get(nc_file,varid="xco2"),
-#     "xco2_quality_flag"=ncdf4::ncvar_get(nc_file,varid="xco2_quality_flag"),
-#     "xco2_incerteza"=ncdf4::ncvar_get(nc_file,varid="xco2_uncertainty"),
-#     "path" = file_path
-#   )
-# 
-# ## Fechamento da conexão.
-#   ncdf4::nc_close(nc_file)
-# 
-# ## Recorte Espacial da área de interesse.
-#   df <- df |>
-#   dplyr::filter(longitude >= -80 &
-#                   longitude <= -32,
-#                 latitude >= -34 &
-#                   latitude <= 10)
-#   return(df)
-# }
-# 
-# ## Visualizando um arquivo.
-# df <- ncdf_reader(list_of_files[1])
-# 
-# ## Visualizando a área de recorte.
-# plot(df$longitude,df$latitude)
-```
-
-```{r}
-# # Recortando e salvando arquivo de XCO2 .rds.
-# # df_2 <- purrr::map_df(list_of_files,ncdf_reader) # Deixar bloqueado para não rodar sempre.
-# # readr::write_rds(df_2,"data-raw/df_2.rds")
-# 
-# # df1 <- readr::read_rds("data-raw/df_1.rds")
-# dplyr::glimpse(df_2)
-```
-
-
-```{r}
-# ## O processamento dos dados do XCO2, foram feitos por partes devido ao tamanho dos arquivos (df1 <- 2014-2019OCO-2; df2 <- 2020-2024 OCO-2 e OCO-3). Então aqui sera feito a junção dos .rds
-# df1 <- readr::read_rds("data-raw/df_1.rds")
-# df2 <- readr::read_rds("data-raw/df_2.rds")
-# 
-# ## Juntando os .rds
-# df_xco2 <- rbind(df1,df2)
-# readr::write_rds(df_xco2, "data-raw/df_xco2.rds")
-```
-
-```{r}
-# ## Corrigindo e extraindo ano/mês/dia do timestamp
-# data_set_xco2 <- readr::read_rds("data-raw/df_xco2.rds") |>
-# dplyr::mutate(
-#     time = lubridate::as_datetime(time,
-#                                   origin = "1970-01-01 00:00:00",
-#                                   tz = "America/Sao_Paulo"),
-#     year = lubridate::year(time),
-#     month = lubridate::month(time),
-#     day = lubridate::day(time),
-#   )
-# 
-# dplyr::glimpse(data_set_xco2)
-# readr::write_rds(data_set_xco2,"data/data-set-xco2-br.rds")
-```
-
-```{r}
-# df_xco2_amazon <- readr::read_rds("data/data-set-xco2-br.rds") |>
-#   dplyr::filter(
-#     longitude >= -74, longitude <= -44, # Limites aproximados da Amazônia Legal
-#     latitude >= -18,  latitude <= 6
-#   )
-# 
-# readr::write_rds(df_xco2_amazon, "data-raw/df_xco2_amazon.rds")
-
-```
-
-```{r}
-# ## Baixar o Polígono da Amazônia Legal
-# amazon <- geobr::read_amazon(showProgress = FALSE)
-# states <- geobr::read_state(showProgress = FALSE)
-# 
-# para_pol <- states$geom[5] |> purrr::pluck(1) |> as.matrix()
-# amazon_pol <- amazon$geom |> purrr::pluck(1) |> as.matrix()
-# amazonas_pol <- states$geom[3] |> purrr::pluck(1) |> as.matrix()
-```
-
-```{r}
-# ## Chamando a base e filtrando
-# df_xco2 <- readr::read_rds("data-raw/df_xco2_amazon.rds") |>
-#   filter(xco2_quality_flag == 0) |> 
-#   mutate(date = make_date(year, month, day)) |> 
-#   select(-path, -time)
-# 
-# df_xco2_amazon <- df_xco2 |>
-#   # dplyr::filter(year == 2014) |>
-#   dplyr::mutate(
-#     flag_amazon = def_pol(longitude, latitude, amazon_pol),
-#     flag_para = def_pol(longitude,latitude,para_pol),
-#     flag_amazonas = def_pol(longitude,latitude,amazonas_pol)
-#   ) |>
-#   dplyr::filter(flag_amazon == TRUE | flag_para == TRUE | flag_amazonas == TRUE) # Para manter apenas o que é Amazônia
-# 
-# ## Visualizando
-# ggplot()+
-#   geom_sf(data = amazon, fill= "transparent", color= "black") +
-#   geom_point(data = df_xco2_amazon,
-#              aes(x= longitude, y= latitude, color= xco2),
-#              size = 0.5, alpha = 0.6) +
-#   scale_color_viridis_c(option = "viridis") +
-#   theme_bw() +
-#   labs(title = "Distribuição de XCO2 - Amazônia Legal (2015-2024)",
-#        x = "Longitude", y = "Latitude", color = "XCO2")
-# 
-
-##readr::write_rds(df_xco2_amazon, "data/data-set-xco2.rds")
-```
-
-```{r}
-# ## Retirando o ano de 2014.
-# df_xco2_amazon <- readr::read_rds("data/data-set-xco2.rds") |> 
-#   filter(year != 2014)
-# 
-# ## Conferindo 
-# contagem_anosco2 <- df_xco2_amazon |>
-#   group_by(year) |>
-#   summarise(n_observacoes = n()) |>
-#   arrange(year)
-# print(contagem_anosco2)
-# 
-# readr::write_rds(df_xco2_amazon, "data/data-set-xco2.rds")
-```
-
-
-#### Teste OCO-2 - standard ##########
-
+#### Faxina e Processamento de Dados de CO2 Atmosférico (XCO2) do OCO-2 e OCO-3/NASA - STANDARD
 
 
 ```{r}
 ## Lista com caminho e nomes dos arquivo a serem lidos - xco2.
-list_of_files <- list.files("../data-raw/xco2/",
+list_of_files <- list.files("../data-raw/", recursive = TRUE, 
                             pattern = ".h5",
                             full.names = TRUE)
 ```
+
 
 ```{r}
 ## buscando o contorno do Brasil.
@@ -466,11 +290,11 @@ def_pol <- function(x, y, pol){
 
 ```{r}
 # Buscar os nomes dos arquivo .nc4.
-list_h5_xco2 <- list.files("../data-raw/xco2/",
+list_h5_xco2 <- list.files("../data-raw/",
            recursive = TRUE,
            full.names = TRUE,
            pattern = "\\.h5")
-list_h5_xco2 <- grep("../data-raw/xco2/", list_h5_xco2, value = TRUE)
+list_h5_xco2 <- grep("../data-raw/", list_h5_xco2, value = TRUE)
 length(list_h5_xco2)
 
 ## Abrindo 01 arquivo.
@@ -518,27 +342,73 @@ h5_reader <- function(file_path){
 
 ```{r}
 # Lista dos arquivos .h5 da pasta.
-list_of_files <- list.files("../data-raw/xco2/",
+list_of_files <- list.files("../data-raw/",
+                            recursive = TRUE,
                             pattern = "\\.h5$",
                             full.names = TRUE)
 
 # # Recortando e salvando arquivo de XCO2 .rds.
-df_test <- purrr::map_df(list_of_files, h5_reader) # Deixar bloqueado para não rodar sempre.
-readr::write_rds(df_test, "../data-raw/df_test.rds")
+df_xco2 <- purrr::map_df(list_of_files, h5_reader) # Deixar bloqueado para não rodar sempre.
+#readr::write_rds(df_xco2, "../data-raw/df_xco2_world.rds")
 
-# df_2 <- readr::read_rds("data-raw/df_2.rds")
-dplyr::glimpse(df_test)
+df_2 <- readr::read_rds("../data-raw/df_xco2_world.rds")
+dplyr::glimpse(df_xco2)
+summary(df_2$longitude)
+summary(df_2$latitude)
+
+### Compactando
+## saveRDS(df_2, "../data-raw/df_xco2_world.rds")
 ```
 
 ```{r}
-br <- geobr::read_country(year = 2019, showProgress = FALSE)
+### Recorte espacial da área de interesse
+df_xco2_amazon <- df_2 |>
+  dplyr::filter(
+    longitude >= -74, longitude <= -44, # Limites aproximados da Amazônia Legal
+    latitude >= -18,  latitude <= 6
+  )
+#readr::write_rds(df_xco2_amazon, "../data-raw/df_xco2_amazon.rds")
+```
 
-ggplot() +
-  geom_point(data = df_test, aes(longitude, latitude, color = xco2),
-             size = 0.5) +
-  scale_color_viridis_c(name = "XCO2 (ppm)") +
-  coord_sf(xlim = c(-80, -32), ylim = c(-34, 10)) +
-  theme_bw()
+```{r}
+# ## Baixar o Polígono da Amazônia Legal
+# amazon <- geobr::read_amazon(showProgress = FALSE)
+# states <- geobr::read_state(showProgress = FALSE)
+# 
+# para_pol <- states$geom[5] |> purrr::pluck(1) |> as.matrix()
+# amazon_pol <- amazon$geom |> purrr::pluck(1) |> as.matrix()
+# amazonas_pol <- states$geom[3] |> purrr::pluck(1) |> as.matrix()
+```
+
+```{r}
+# ## Chamando a base e filtrando
+# df_xco2 <- readr::read_rds("data-raw/df_xco2_amazon.rds") |>
+#   filter(xco2_quality_flag == 0) |> 
+#   mutate(date = make_date(year, month, day)) |> 
+#   select(-path, -time)
+# 
+# df_xco2_amazon <- df_xco2 |>
+#   # dplyr::filter(year == 2014) |>
+#   dplyr::mutate(
+#     flag_amazon = def_pol(longitude, latitude, amazon_pol),
+#     flag_para = def_pol(longitude,latitude,para_pol),
+#     flag_amazonas = def_pol(longitude,latitude,amazonas_pol)
+#   ) |>
+#   dplyr::filter(flag_amazon == TRUE | flag_para == TRUE | flag_amazonas == TRUE) # Para manter apenas o que é Amazônia
+# 
+# ## Visualizando
+# ggplot()+
+#   geom_sf(data = amazon, fill= "transparent", color= "black") +
+#   geom_point(data = df_xco2_amazon,
+#              aes(x= longitude, y= latitude, color= xco2),
+#              size = 0.5, alpha = 0.6) +
+#   scale_color_viridis_c(option = "viridis") +
+#   theme_bw() +
+#   labs(title = "Distribuição de XCO2 - Amazônia Legal (2015-2024)",
+#        x = "Longitude", y = "Latitude", color = "XCO2")
+# 
+
+##readr::write_rds(df_xco2_amazon, "data/data-set-xco2.rds")
 ```
 
 
